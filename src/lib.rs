@@ -86,13 +86,17 @@ const CMD_F_DEL: u8 = 0xD3;
 const CMD_USB_RECOV: u8 = 0xF0;
 const CMD_RUN_APP: u8 = 0xF1;
 
+/// The operation mode of the Mega Everdrive Pro.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode {
+    /// Service / DFU mode.
     Service,
+    /// Regular operation.
     App,
 }
 
 impl Mode {
+    /// Get the lower-case name, used for debug printing.
     pub fn lower_name(self) -> &'static str {
         match self {
             Mode::Service => "service",
@@ -101,10 +105,14 @@ impl Mode {
     }
 }
 
+/// A reset mode for the Mega Drive.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResetMode {
+    /// Clear the reset flag (this is used to trigger reloads of code (I think)).
     Off,
+    /// A soft reset: just go to the entry point.
     Soft,
+    /// Reset the system entirely.
     Hard,
 }
 
@@ -118,10 +126,14 @@ impl ResetMode {
     }
 }
 
+/// Implement this trait to provide a source for the serial connection that
+/// megalink uses. Since the link needs to be re-established after a connect,
+/// picking a specific serial device is not always possible.
 pub trait SerialFactory {
     fn open(&mut self) -> anyhow::Result<Box<dyn SerialPort>>;
 }
 
+/// The driver for the Mega Everdrive Pro serial interface.
 pub struct EverdriveSerial<F> {
     factory: F,
     serial: Box<dyn SerialPort>,
@@ -147,6 +159,7 @@ impl<F: SerialFactory> EverdriveSerial<F> {
         Ok(s)
     }
 
+    /// Create a new Mega Everdrive Pro controller.
     pub fn new(mut factory: F) -> anyhow::Result<EverdriveSerial<F>> {
         let serial = EverdriveSerial::open_serial(&mut factory)?;
         let mut s = EverdriveSerial {
@@ -219,6 +232,9 @@ impl<F: SerialFactory> EverdriveSerial<F> {
         Ok(String::from_utf8(bytes)?)
     }
 
+    /// Get the return code of the previous operation.
+    ///
+    /// This is cleared once read. 0 indicates success.
     pub fn get_status(&mut self) -> anyhow::Result<u8> {
         self.tx_cmd(CMD_STATUS)?;
         self.flush_cmd()?;
@@ -239,6 +255,7 @@ impl<F: SerialFactory> EverdriveSerial<F> {
         Ok(())
     }
 
+    /// Get the current operating mode of the cartridge.
     pub fn get_mode(&mut self) -> anyhow::Result<Mode> {
         self.tx_cmd(CMD_GET_MODE)?;
         self.flush_cmd()?;
@@ -251,6 +268,7 @@ impl<F: SerialFactory> EverdriveSerial<F> {
         Ok(mode)
     }
 
+    /// Change the current operating mode.
     pub fn set_mode(&mut self, target_mode: Mode) -> anyhow::Result<()> {
         let current_mode = self.get_mode()?;
         if current_mode == target_mode {
@@ -286,6 +304,7 @@ impl<F: SerialFactory> EverdriveSerial<F> {
         Err(anyhow!("timeout reconnecting to device"))?
     }
 
+    /// Reset the Mega Drive.
     pub fn reset_host(&mut self, mode: ResetMode) -> anyhow::Result<()> {
         self.tx_cmd(CMD_HOST_RST)?;
         self.tx_u8(mode.command())?;
@@ -293,6 +312,8 @@ impl<F: SerialFactory> EverdriveSerial<F> {
         Ok(())
     }
 
+    /// Write to the Mega Drive's memory. This can be used to write to the ROM
+    /// area with the Mega Everdrive.
     pub fn write_memory(&mut self, addr: u32, data: &[u8]) -> anyhow::Result<()> {
         if data.len() == 0 {
             return Ok(());
@@ -311,6 +332,7 @@ impl<F: SerialFactory> EverdriveSerial<F> {
         Ok(())
     }
 
+    /// Read from the Mega Drive's memory.
     pub fn read_memory(&mut self, addr: u32, data: &mut [u8]) -> anyhow::Result<()> {
         if data.len() == 0 {
             return Ok(());
@@ -326,11 +348,14 @@ impl<F: SerialFactory> EverdriveSerial<F> {
         Ok(())
     }
 
+    /// Write to the FIFO used internally by the Mega Everdrive for communication
+    /// with the IO co-processor.
     pub fn fifo_write(&mut self, data: &[u8]) -> anyhow::Result<()> {
         self.write_memory(ADDR_FIFO, data)?;
         Ok(())
     }
 
+    /// Write an integer to the FIFO.
     pub fn fifo_write_u16(&mut self, v: u16) -> anyhow::Result<()> {
         let mut buf = [0u8; 2];
         BigEndian::write_u16(&mut buf, v);
@@ -338,6 +363,7 @@ impl<F: SerialFactory> EverdriveSerial<F> {
         Ok(())
     }
 
+    /// Write an integer to the FIFO.
     pub fn fifo_write_u32(&mut self, v: u32) -> anyhow::Result<()> {
         let mut buf = [0u8; 4];
         BigEndian::write_u32(&mut buf, v);
@@ -345,17 +371,20 @@ impl<F: SerialFactory> EverdriveSerial<F> {
         Ok(())
     }
 
+    /// Write a string to the FIFO.
     pub fn fifo_write_str(&mut self, str: &str) -> anyhow::Result<()> {
         self.fifo_write_u16(str.len() as u16)?;
         self.fifo_write(str.as_bytes())?;
         Ok(())
     }
 
+    /// Read some data from the FIFO.
     pub fn fifo_read(&mut self, data: &mut [u8]) -> anyhow::Result<()> {
         self.read_memory(ADDR_FIFO, data)?;
         Ok(())
     }
 
+    /// Load and boot a game ROM.
     pub fn load_game(&mut self, name: &str, game: &[u8], skip_fpga: bool) -> anyhow::Result<()> {
         debug!("writing ROM: {} ({} bytes)", name, game.len());
         self.set_mode(Mode::App)?;
