@@ -14,6 +14,7 @@ use log::{info, debug};
 
 const PACKET_CMD: u8 = '+' as u8;
 
+const ACK_BLOCK_SIZE: usize = 1024;
 const MAX_ROM_SIZE: usize = 0xF80000;
 
 const ADDR_ROM: u32 = 0x0000000;
@@ -134,6 +135,15 @@ impl ResetMode {
     }
 }
 
+/// File metadata for files on the SD card.
+pub struct FileMetadata {
+    pub name: String,
+    pub size: u32,
+    pub date: u16,
+    pub time: u16,
+    pub attrib: u8,
+}
+
 /// Implement this trait to provide a source for the serial connection that
 /// megalink uses. Since the link needs to be re-established after a connect,
 /// picking a specific serial device is not always possible.
@@ -210,10 +220,37 @@ impl<F: SerialFactory> EverdriveSerial<F> {
         Ok(())
     }
 
+    fn tx_u16(&mut self, v: u16) -> anyhow::Result<()> {
+        let mut buf = [0u8; 2];
+        BigEndian::write_u16(&mut buf, v);
+        self.serial.write_all(&buf)?;
+        Ok(())
+    }
+
     fn tx_u32(&mut self, v: u32) -> anyhow::Result<()> {
         let mut buf = [0u8; 4];
         BigEndian::write_u32(&mut buf, v);
         self.serial.write_all(&buf)?;
+        Ok(())
+    }
+
+    fn tx_ack(&mut self, data: &[u8]) -> anyhow::Result<()> {
+        for chunk in data.chunks(ACK_BLOCK_SIZE) {
+            let resp = self.rx_u8()?;
+            if resp != 0 {
+                Err(anyhow!("error transferring data: {}", resp))?;
+            }
+
+            self.serial.write_all(chunk)?;
+            self.flush_cmd()?;
+        }
+
+        Ok(())
+    }
+
+    fn tx_str(&mut self, s: &str) -> anyhow::Result<()> {
+        self.tx_u16(s.len() as u16)?;
+        self.serial.write_all(s.as_bytes())?;
         Ok(())
     }
 
@@ -233,11 +270,35 @@ impl<F: SerialFactory> EverdriveSerial<F> {
         Ok(BigEndian::read_u16(&bytes))
     }
 
+    fn rx_u32(&mut self) -> anyhow::Result<u32> {
+        debug!("rx 32");
+        let mut bytes = [0u8; 4];
+        self.serial.read_exact(&mut bytes)?;
+        debug!("rx done");
+        Ok(BigEndian::read_u32(&bytes))
+    }
+
     fn rx_str(&mut self) -> anyhow::Result<String> {
         let len = self.rx_u16()? as usize;
         let mut bytes = vec![0u8; len];
         self.serial.read_exact(&mut bytes)?;
         Ok(String::from_utf8(bytes)?)
+    }
+
+    fn rx_file_metadata(&mut self) -> anyhow::Result<FileMetadata> {
+        let size = self.rx_u32()?;
+        let date = self.rx_u16()?;
+        let time = self.rx_u16()?;
+        let attrib = self.rx_u8()?;
+        let name = self.rx_str()?;
+
+        Ok(FileMetadata{
+            name,
+            size,
+            date,
+            time,
+            attrib,
+        })
     }
 
     /// Get the return code of the previous operation.
@@ -427,6 +488,75 @@ impl<F: SerialFactory> EverdriveSerial<F> {
 
         // Clear response.
         self.rx_u8()?;
+        Ok(())
+    }
+
+    /// Load an image into the FPGA from a slice.
+    pub fn load_fpga_from_slice(&mut self, data: &[u8]) -> anyhow::Result<()> {
+        debug!("loading FPGA image ({} bytes)", data.len());
+
+        self.set_mode(Mode::App)?;
+        self.reset_host(ResetMode::Soft)?;
+
+        self.tx_cmd(CMD_FPG_USB)?;
+        self.tx_u32(data.len() as u32)?;
+
+        self.tx_ack(data)?;
+        self.check_status()?;
+        Ok(())
+    }
+
+    /// Load an image into the FPGA from flash storage.
+    pub fn load_fpga_from_flash(&mut self, addr: u32) -> anyhow::Result<()> {
+        debug!("loading FPGA image @ {:x}", addr);
+
+        self.set_mode(Mode::App)?;
+        self.reset_host(ResetMode::Soft)?;
+
+        self.tx_cmd(CMD_FPG_FLA)?;
+        self.tx_u32(addr)?;
+        self.flush_cmd()?;
+        self.check_status()?;
+        Ok(())
+    }
+
+    /// Load an image into the FPGA from the SD card.
+    pub fn load_fpga_from_sd(&mut self, path: &str) -> anyhow::Result<()> {
+        debug!("loading FPGA from {}", path);
+
+        self.set_mode(Mode::App)?;
+        self.reset_host(ResetMode::Soft)?;
+
+        let info = self.get_file_metadata(path)?;
+
+        self.tx_cmd(CMD_FPG_SDC)?;
+        self.tx_u32(info.size)?;
+        self.tx_u8(0)?;
+        self.flush_cmd()?;
+        self.check_status()?;
+        Ok(())
+    }
+
+    /// Fetch the metadata for a file on the SD card.
+    pub fn get_file_metadata(&mut self, path: &str) -> anyhow::Result<FileMetadata> {
+        self.tx_cmd(CMD_F_FINFO)?;
+        self.tx_str(path)?;
+        self.flush_cmd()?;
+
+        let resp = self.rx_u8()?;
+        if resp != 0 {
+            Err(anyhow!("error fetching file metadata: {}", resp))?;
+        }
+
+        Ok(self.rx_file_metadata()?)
+    }
+
+    /// Set the current file handle, given a path on the SD card.
+    pub fn open_file(&mut self, path: &str, mode: u8) -> anyhow::Result<()> {
+        self.tx_cmd(CMD_F_FOPN)?;
+        self.tx_u8(mode)?;
+        self.tx_str(path)?;
+        self.check_status()?;
         Ok(())
     }
 }
