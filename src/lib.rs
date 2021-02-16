@@ -453,6 +453,28 @@ impl<F: SerialFactory> EverdriveSerial<F> {
         Ok(())
     }
 
+    /// Read from flash storage.
+    pub fn read_flash(&mut self, addr: u32, data: &mut [u8]) -> anyhow::Result<()> {
+        self.tx_cmd(CMD_FLA_RD)?;
+        self.tx_u32(addr)?;
+        self.tx_u32(data.len() as u32)?;
+        self.flush_cmd()?;
+
+        self.serial.read_exact(data)?;
+        Ok(())
+    }
+
+    /// Write to flash storage.
+    pub fn write_flash(&mut self, addr: u32, data: &[u8]) -> anyhow::Result<()> {
+        self.tx_cmd(CMD_FLA_WR)?;
+        self.tx_u32(addr)?;
+        self.tx_u32(data.len() as u32)?;
+        self.flush_cmd()?;
+        self.tx_ack(data)?;
+        self.check_status()?;
+        Ok(())
+    }
+
     /// Load and boot a game ROM.
     pub fn load_game(&mut self, name: &str, game: &[u8], skip_fpga: bool) -> anyhow::Result<()> {
         debug!("writing ROM: {} ({} bytes)", name, game.len());
@@ -534,6 +556,33 @@ impl<F: SerialFactory> EverdriveSerial<F> {
         self.tx_u8(0)?;
         self.flush_cmd()?;
         self.check_status()?;
+        Ok(())
+    }
+
+    /// Recover from badly-flashed firmware.
+    pub fn recover(&mut self) -> anyhow::Result<()> {
+        self.set_mode(Mode::Service)?;
+
+        let mut crc = [0u8; 4];
+        self.read_flash(ADDR_FLA_ICOR + 4, &mut crc)?;
+        let crc = BigEndian::read_u32(&crc);
+
+        let old_timeout = self.serial.timeout();
+        self.serial.set_timeout(Duration::from_secs(8));
+
+        self.tx_cmd(CMD_USB_RECOV)?;
+        self.tx_u32(ADDR_FLA_ICOR)?;
+        self.tx_u32(crc)?;
+
+        let status = self.get_status()?;
+        self.serial.set_timeout(old_timeout);
+
+        match status {
+            0x88 => Err(anyhow!("current core matches recovery copy"))?,
+            0 => {},
+            v => Err(anyhow!("recovery error: {:2x}", v)),
+        }
+
         Ok(())
     }
 

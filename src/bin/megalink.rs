@@ -20,6 +20,7 @@ struct Opts {
 enum Command {
     SetMode(CmdSetMode),
     Reset(CmdReset),
+    Recover(CmdRecover),
     Run(CmdRunGame),
     LoadFPGA(CmdLoadFPGA),
 }
@@ -34,6 +35,9 @@ struct CmdReset {
     #[clap(short, long)]
     hard: bool,
 }
+
+#[derive(Clap)]
+struct CmdRecover;
 
 #[derive(Clap)]
 struct CmdRunGame {
@@ -117,6 +121,9 @@ fn main() -> anyhow::Result<()> {
             let mode = if c.hard { ResetMode::Hard } else { ResetMode::Soft };
             everdrive.reset_host(mode)?;
         }
+        Command::Recover(_) => {
+          everdrive.recover()?;
+        },
         Command::Run(c) => {
             let contents = std::fs::read(&c.path)?;
             let file_name = c.path.file_name().unwrap().to_str().unwrap();
