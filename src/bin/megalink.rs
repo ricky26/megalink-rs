@@ -1,10 +1,8 @@
 use std::path::PathBuf;
 use clap::Clap;
 use log::{info, warn};
-use async_trait::async_trait;
 use anyhow::anyhow;
 use megalink_rs::{EverdriveSerial, Mode, SerialFactory, ResetMode};
-use tokio_serial::Serial;
 use serialport::SerialPort;
 
 #[derive(Clap)]

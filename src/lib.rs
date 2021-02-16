@@ -12,85 +12,82 @@ use serialport::SerialPort;
 use anyhow::anyhow;
 use log::{info, debug};
 
+// These constants are from the original megalink.
 const PACKET_CMD: u8 = '+' as u8;
 
 const ACK_BLOCK_SIZE: usize = 1024;
-const MAX_ROM_SIZE: usize = 0xF80000;
+//const MAX_ROM_SIZE: usize = 0xF80000;
 
 const ADDR_ROM: u32 = 0x0000000;
-const ADDR_SRAM: u32 = 0x1000000;
-const ADDR_BRAM: u32 = 0x1080000;
-const ADDR_CFG: u32 = 0x1800000;
-const ADDR_SSR: u32 = 0x1802000;
+//const ADDR_SRAM: u32 = 0x1000000;
+//const ADDR_BRAM: u32 = 0x1080000;
+//const ADDR_CFG: u32 = 0x1800000;
+//const ADDR_SSR: u32 = 0x1802000;
 const ADDR_FIFO: u32 = 0x1810000;
 
-const SIZE_ROMX: u32 = 0x1000000;
-const SIZE_SRAM: u32 = 0x80000;
-const SIZE_BRAM: u32 = 0x80000;
+//const SIZE_ROMX: u32 = 0x1000000;
+//const SIZE_SRAM: u32 = 0x80000;
+//const SIZE_BRAM: u32 = 0x80000;
 
-const ADDR_FLA_MENU: u32 = 0x00000;
-const ADDR_FLA_FPGA: u32 = 0x40000;
+//const ADDR_FLA_MENU: u32 = 0x00000;
+//const ADDR_FLA_FPGA: u32 = 0x40000;
 const ADDR_FLA_ICOR: u32 = 0x80000;
 
-const FAT_READ: u8 = 0x01;
-const FAT_WRITE: u8 = 0x02;
-const FAT_OPEN_EXISTING: u8 = 0x00;
-const FAT_CREATE_NEW: u8 = 0x04;
-const FAT_CREATE_ALWAYS: u8 = 0x08;
-const FAT_OPEN_ALWAYS: u8 = 0x10;
-const FAT_OPEN_APPEND: u8 = 0x30;
-
-const HOST_RST_OFF: u8 = 0;
-const HOST_RST_SOFT: u8 = 1;
-const HOST_RST_HARD: u8 = 2;
+//const FAT_READ: u8 = 0x01;
+//const FAT_WRITE: u8 = 0x02;
+//const FAT_OPEN_EXISTING: u8 = 0x00;
+//const FAT_CREATE_NEW: u8 = 0x04;
+//const FAT_CREATE_ALWAYS: u8 = 0x08;
+//const FAT_OPEN_ALWAYS: u8 = 0x10;
+//const FAT_OPEN_APPEND: u8 = 0x30;
 
 const CMD_STATUS: u8 = 0x10;
 const CMD_GET_MODE: u8 = 0x11;
 const CMD_IO_RST: u8 = 0x12;
-const CMD_GET_VDC: u8 = 0x13;
-const CMD_RTC_GET: u8 = 0x14;
-const CMD_RTC_SET: u8 = 0x15;
+//const CMD_GET_VDC: u8 = 0x13;
+//const CMD_RTC_GET: u8 = 0x14;
+//const CMD_RTC_SET: u8 = 0x15;
 const CMD_FLA_RD: u8 = 0x16;
 const CMD_FLA_WR: u8 = 0x17;
-const CMD_FLA_WR_SDC: u8 = 0x18;
+//const CMD_FLA_WR_SDC: u8 = 0x18;
 const CMD_MEM_RD: u8 = 0x19;
 const CMD_MEM_WR: u8 = 0x1A;
-const CMD_MEM_SET: u8 = 0x1B;
-const CMD_MEM_TST: u8 = 0x1C;
-const CMD_MEM_CRC: u8 = 0x1D;
+//const CMD_MEM_SET: u8 = 0x1B;
+//const CMD_MEM_TST: u8 = 0x1C;
+//const CMD_MEM_CRC: u8 = 0x1D;
 const CMD_FPG_USB: u8 = 0x1E;
 const CMD_FPG_SDC: u8 = 0x1F;
 const CMD_FPG_FLA: u8 = 0x20;
-const CMD_FPG_CFG: u8 = 0x21;
-const CMD_USB_WR: u8 = 0x22;
-const CMD_FIFO_WR: u8 = 0x23;
-const CMD_UART_WR: u8 = 0x24;
-const CMD_REINIT: u8 = 0x25;
-const CMD_SYS_INF: u8 = 0x26;
-const CMD_GAME_CTR: u8 = 0x27;
-const CMD_UPD_EXEC: u8 = 0x28;
+//const CMD_FPG_CFG: u8 = 0x21;
+//const CMD_USB_WR: u8 = 0x22;
+//const CMD_FIFO_WR: u8 = 0x23;
+//const CMD_UART_WR: u8 = 0x24;
+//const CMD_REINIT: u8 = 0x25;
+//const CMD_SYS_INF: u8 = 0x26;
+//const CMD_GAME_CTR: u8 = 0x27;
+//const CMD_UPD_EXEC: u8 = 0x28;
 const CMD_HOST_RST: u8 = 0x29;
 
-const CMD_DISK_INIT: u8 = 0xC0;
-const CMD_DISK_RD: u8 = 0xC1;
-const CMD_DISK_WR: u8 = 0xC2;
-const CMD_F_DIR_OPN: u8 = 0xC3;
-const CMD_F_DIR_RD: u8 = 0xC4;
-const CMD_F_DIR_LD: u8 = 0xC5;
-const CMD_F_DIR_SIZE: u8 = 0xC6;
-const CMD_F_DIR_PATH: u8 = 0xC7;
-const CMD_F_DIR_GET: u8 = 0xC8;
+//const CMD_DISK_INIT: u8 = 0xC0;
+//const CMD_DISK_RD: u8 = 0xC1;
+//const CMD_DISK_WR: u8 = 0xC2;
+//const CMD_F_DIR_OPN: u8 = 0xC3;
+//const CMD_F_DIR_RD: u8 = 0xC4;
+//const CMD_F_DIR_LD: u8 = 0xC5;
+//const CMD_F_DIR_SIZE: u8 = 0xC6;
+//const CMD_F_DIR_PATH: u8 = 0xC7;
+//const CMD_F_DIR_GET: u8 = 0xC8;
 const CMD_F_FOPN: u8 = 0xC9;
-const CMD_F_FRD: u8 = 0xCA;
-const CMD_F_FRD_MEM: u8 = 0xCB;
-const CMD_F_FWR: u8 = 0xCC;
-const CMD_F_FWR_MEM: u8 = 0xCD;
-const CMD_F_FCLOSE: u8 = 0xCE;
-const CMD_F_FPTR: u8 = 0xCF;
+//const CMD_F_FRD: u8 = 0xCA;
+//const CMD_F_FRD_MEM: u8 = 0xCB;
+//const CMD_F_FWR: u8 = 0xCC;
+//const CMD_F_FWR_MEM: u8 = 0xCD;
+//const CMD_F_FCLOSE: u8 = 0xCE;
+//const CMD_F_FPTR: u8 = 0xCF;
 const CMD_F_FINFO: u8 = 0xD0;
-const CMD_F_FCRC: u8 = 0xD1;
-const CMD_F_DIR_MK: u8 = 0xD2;
-const CMD_F_DEL: u8 = 0xD3;
+//const CMD_F_FCRC: u8 = 0xD1;
+//const CMD_F_DIR_MK: u8 = 0xD2;
+//const CMD_F_DEL: u8 = 0xD3;
 
 const CMD_USB_RECOV: u8 = 0xF0;
 const CMD_RUN_APP: u8 = 0xF1;
@@ -160,7 +157,7 @@ pub struct EverdriveSerial<F> {
 impl<F: SerialFactory> EverdriveSerial<F> {
     fn open_serial(f: &mut F) -> anyhow::Result<Box<dyn SerialPort>> {
         let mut s = f.open()?;
-        s.set_timeout(Duration::from_millis(100));
+        s.set_timeout(Duration::from_millis(100))?;
 
         let mut tmp = [0u8; 1024];
         loop {
@@ -173,7 +170,7 @@ impl<F: SerialFactory> EverdriveSerial<F> {
             }
         }
 
-        s.set_timeout(Duration::from_secs(1));
+        s.set_timeout(Duration::from_secs(1))?;
         Ok(s)
     }
 
@@ -568,19 +565,19 @@ impl<F: SerialFactory> EverdriveSerial<F> {
         let crc = BigEndian::read_u32(&crc);
 
         let old_timeout = self.serial.timeout();
-        self.serial.set_timeout(Duration::from_secs(8));
+        self.serial.set_timeout(Duration::from_secs(8))?;
 
         self.tx_cmd(CMD_USB_RECOV)?;
         self.tx_u32(ADDR_FLA_ICOR)?;
         self.tx_u32(crc)?;
 
         let status = self.get_status()?;
-        self.serial.set_timeout(old_timeout);
+        self.serial.set_timeout(old_timeout)?;
 
         match status {
             0x88 => Err(anyhow!("current core matches recovery copy"))?,
             0 => {},
-            v => Err(anyhow!("recovery error: {:2x}", v)),
+            v => Err(anyhow!("recovery error: {:2x}", v))?,
         }
 
         Ok(())
