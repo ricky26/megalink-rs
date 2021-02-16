@@ -1,9 +1,11 @@
+use std::path::PathBuf;
 use clap::Clap;
 use log::{info, warn};
 use async_trait::async_trait;
 use anyhow::anyhow;
 use megalink_rs::{EverdriveSerial, Mode, SerialFactory, ResetMode};
 use tokio_serial::Serial;
+use serialport::SerialPort;
 
 #[derive(Clap)]
 struct Opts {
@@ -28,7 +30,7 @@ struct CmdReset {
 
 #[derive(Clap)]
 struct CmdRunGame {
-    path: String,
+    path: PathBuf,
 
     #[clap(short, long)]
     skip_fpga: bool,
@@ -39,9 +41,8 @@ struct Factory {
     first: bool,
 }
 
-#[async_trait]
 impl SerialFactory for Factory {
-    async fn open(&mut self) -> anyhow::Result<Serial> {
+    fn open(&mut self) -> anyhow::Result<Box<dyn SerialPort>> {
         let first = self.first;
         self.first = false;
 
@@ -68,34 +69,29 @@ impl SerialFactory for Factory {
         }, Ok)?;
 
         info!("using serial port {}", &serial_port_path);
-
-        let s = Serial::from_path(&serial_port_path, &tokio_serial::SerialPortSettings{
-            ..Default::default()
-        })?;
-
-        Ok(s)
+        Ok(serialport::new(&serial_port_path, 9600).open()?)
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info"))
         .init();
     let opts = Opts::parse();
 
     let factory = Factory { port_name: opts.serial_port.clone(), first: true };
-    let mut everdrive = EverdriveSerial::new(factory).await?;
+    let mut everdrive = EverdriveSerial::new(factory)?;
 
     match opts.command {
         Command::Reset(r) => {
             info!("resetting");
             let mode = if r.hard { ResetMode::Hard } else { ResetMode::Soft };
-            everdrive.reset_host(mode).await?;
+            everdrive.reset_host(mode)?;
         },
         Command::Run(r) => {
             let contents = std::fs::read(&r.path)?;
-            everdrive.load_game(&r.path, &contents, r.skip_fpga).await?;
+            let file_name = r.path.file_name().unwrap().to_str().unwrap();
+            everdrive.load_game(file_name, &contents, r.skip_fpga)?;
         },
     }
 

@@ -1,9 +1,6 @@
 use std::time::Duration;
-use futures::{future, FutureExt};
-use tokio::io::{AsyncWriteExt, AsyncReadExt};
-use tokio_serial::Serial;
 use byteorder::{ByteOrder, BigEndian};
-use async_trait::async_trait;
+use serialport::SerialPort;
 use anyhow::anyhow;
 use log::{info, debug};
 
@@ -121,40 +118,37 @@ impl ResetMode {
     }
 }
 
-#[async_trait]
 pub trait SerialFactory {
-    async fn open(&mut self) -> anyhow::Result<Serial>;
+    fn open(&mut self) -> anyhow::Result<Box<dyn SerialPort>>;
 }
 
 pub struct EverdriveSerial<F> {
     factory: F,
-    serial: Serial,
+    serial: Box<dyn SerialPort>,
 }
 
 impl<F: SerialFactory> EverdriveSerial<F> {
-    async fn open_serial(f: &mut F) -> anyhow::Result<Serial> {
-        let mut s = f.open().await?;
-        let mut timeout = tokio::time::sleep(Duration::from_millis(100)).boxed();
+    fn open_serial(f: &mut F) -> anyhow::Result<Box<dyn SerialPort>> {
+        let mut s = f.open()?;
+        s.set_timeout(Duration::from_millis(100));
 
         let mut tmp = [0u8; 1024];
         loop {
-            let mut read = s.read(&mut tmp).boxed();
-
-            let n = match future::select(&mut timeout, &mut read).await {
-                future::Either::Right((n, _)) => n?,
-                future::Either::Left((_, _)) => break,
+            let n = match s.read(&mut tmp) {
+                Ok(n) => n,
+                Err(_) => break,
             };
-
             if n <= 0 {
                 break;
             }
         }
 
+        s.set_timeout(Duration::from_secs(1));
         Ok(s)
     }
 
-    pub async fn new(mut factory: F) -> anyhow::Result<EverdriveSerial<F>> {
-        let serial = EverdriveSerial::open_serial(&mut factory).await?;
+    pub fn new(mut factory: F) -> anyhow::Result<EverdriveSerial<F>> {
+        let serial = EverdriveSerial::open_serial(&mut factory)?;
         let mut s = EverdriveSerial {
             factory,
             serial,
@@ -162,20 +156,21 @@ impl<F: SerialFactory> EverdriveSerial<F> {
 
         // Do a status check early, so that if we get stuck (from an incorrect
         // device, or bad state), we get stuck early.
-        s.get_status().await?;
+        s.get_status()?;
 
+        debug!("initial status {}", s.get_status()?);
         Ok(s)
     }
 
-    async fn flush_cmd(&mut self) -> anyhow::Result<()> {
+    fn flush_cmd(&mut self) -> anyhow::Result<()> {
         debug!("flush cmd");
-        self.serial.flush().await?;
+        self.serial.flush()?;
         // This _really_ should not be needed.... but it is.
-        tokio::time::sleep(Duration::from_millis(1)).await;
+        //tokio::time::sleep(Duration::from_millis(1)).await;
         Ok(())
     }
 
-    async fn tx_cmd(&mut self, cmd: u8) -> anyhow::Result<()> {
+    fn tx_cmd(&mut self, cmd: u8) -> anyhow::Result<()> {
         debug!("tx cmd {:02x}", cmd);
         let data = [
             PACKET_CMD,
@@ -183,51 +178,51 @@ impl<F: SerialFactory> EverdriveSerial<F> {
             cmd,
             !cmd];
 
-        self.serial.write_all(&data).await?;
+        self.serial.write_all(&data)?;
         debug!("tx done");
         Ok(())
     }
 
-    async fn tx_u8(&mut self, v: u8) -> anyhow::Result<()> {
+    fn tx_u8(&mut self, v: u8) -> anyhow::Result<()> {
         let buf = [v];
-        self.serial.write_all(&buf).await?;
+        self.serial.write_all(&buf)?;
         Ok(())
     }
 
-    async fn tx_u32(&mut self, v: u32) -> anyhow::Result<()> {
+    fn tx_u32(&mut self, v: u32) -> anyhow::Result<()> {
         let mut buf = [0u8; 4];
         BigEndian::write_u32(&mut buf, v);
-        self.serial.write_all(&buf).await?;
+        self.serial.write_all(&buf)?;
         Ok(())
     }
 
-    async fn rx_u8(&mut self) -> anyhow::Result<u8> {
+    fn rx_u8(&mut self) -> anyhow::Result<u8> {
         debug!("rx 8");
         let mut v = [0u8; 1];
-        self.serial.read_exact(&mut v).await?;
+        self.serial.read_exact(&mut v)?;
         debug!("rx done");
         Ok(v[0])
     }
 
-    async fn rx_u16(&mut self) -> anyhow::Result<u16> {
+    fn rx_u16(&mut self) -> anyhow::Result<u16> {
         debug!("rx 16");
         let mut bytes = [0u8; 2];
-        self.serial.read_exact(&mut bytes).await?;
+        self.serial.read_exact(&mut bytes)?;
         debug!("rx done");
         Ok(BigEndian::read_u16(&bytes))
     }
 
-    async fn rx_str(&mut self) -> anyhow::Result<String> {
-        let len = self.rx_u16().await? as usize;
+    fn rx_str(&mut self) -> anyhow::Result<String> {
+        let len = self.rx_u16()? as usize;
         let mut bytes = vec![0u8; len];
-        self.serial.read_exact(&mut bytes).await?;
+        self.serial.read_exact(&mut bytes)?;
         Ok(String::from_utf8(bytes)?)
     }
 
-    async fn get_status(&mut self) -> anyhow::Result<u8> {
-        self.tx_cmd(CMD_STATUS).await?;
-        self.flush_cmd().await?;
-        let msg = self.rx_u16().await?;
+    pub fn get_status(&mut self) -> anyhow::Result<u8> {
+        self.tx_cmd(CMD_STATUS)?;
+        self.flush_cmd()?;
+        let msg = self.rx_u16()?;
 
         if (msg & 0xff00) != 0xa500 {
             Err(anyhow!("invalid status response: {:04x}", msg))?;
@@ -236,11 +231,19 @@ impl<F: SerialFactory> EverdriveSerial<F> {
         Ok(msg as u8)
     }
 
-    pub async fn get_mode(&mut self) -> anyhow::Result<Mode> {
-        self.tx_cmd(CMD_GET_MODE).await?;
-        self.flush_cmd().await?;
+    fn check_status(&mut self) -> anyhow::Result<()> {
+        let res = self.get_status()?;
+        if res != 0 {
+            Err(anyhow!("unexpected status {}", res))?;
+        }
+        Ok(())
+    }
 
-        let b = self.rx_u8().await?;
+    pub fn get_mode(&mut self) -> anyhow::Result<Mode> {
+        self.tx_cmd(CMD_GET_MODE)?;
+        self.flush_cmd()?;
+
+        let b = self.rx_u8()?;
         let mode = match b {
             0xa1 => Mode::Service,
             _ => Mode::App,
@@ -248,8 +251,8 @@ impl<F: SerialFactory> EverdriveSerial<F> {
         Ok(mode)
     }
 
-    pub async fn set_mode(&mut self, target_mode: Mode) -> anyhow::Result<()> {
-        let current_mode = self.get_mode().await?;
+    pub fn set_mode(&mut self, target_mode: Mode) -> anyhow::Result<()> {
+        let current_mode = self.get_mode()?;
         if current_mode == target_mode {
             return Ok(());
         }
@@ -258,25 +261,23 @@ impl<F: SerialFactory> EverdriveSerial<F> {
 
         match target_mode {
             Mode::Service => {
-                self.tx_cmd(CMD_IO_RST).await?;
-                self.tx_u8(0).await?;
+                self.tx_cmd(CMD_IO_RST)?;
+                self.tx_u8(0)?;
             }
             Mode::App => {
-                self.tx_cmd(CMD_RUN_APP).await?;
+                self.tx_cmd(CMD_RUN_APP)?;
             }
         }
 
         for _ in 0..100 {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-
-            let serial = match EverdriveSerial::open_serial(&mut self.factory).await {
+            let serial = match EverdriveSerial::open_serial(&mut self.factory) {
                 Ok(s) => s,
                 Err(e) => {
                     debug!("error waiting for reset: {}", e);
                     continue;
                 }
             };
-            self.get_status().await?;
+            self.get_status()?;
 
             self.serial = serial;
             return Ok(());
@@ -285,115 +286,111 @@ impl<F: SerialFactory> EverdriveSerial<F> {
         Err(anyhow!("timeout reconnecting to device"))?
     }
 
-    pub async fn reset_host(&mut self, mode: ResetMode) -> anyhow::Result<()> {
-        self.tx_cmd(CMD_HOST_RST).await?;
-        self.tx_u8(mode.command()).await?;
-        self.flush_cmd().await?;
+    pub fn reset_host(&mut self, mode: ResetMode) -> anyhow::Result<()> {
+        self.tx_cmd(CMD_HOST_RST)?;
+        self.tx_u8(mode.command())?;
+        self.flush_cmd()?;
         Ok(())
     }
 
-    pub async fn write_memory(&mut self, addr: u32, data: &[u8]) -> anyhow::Result<()> {
+    pub fn write_memory(&mut self, addr: u32, data: &[u8]) -> anyhow::Result<()> {
         if data.len() == 0 {
             return Ok(());
         }
 
-        self.tx_cmd(CMD_MEM_WR).await?;
-        self.tx_u32(addr).await?;
-        self.tx_u32(data.len() as u32).await?;
-        self.tx_u8(0).await?;
-        self.flush_cmd().await?;
+        debug!("write {} to {:x}", data.len(), addr);
 
-        for chunk in data.chunks(8192) {
-            self.serial.write_all(chunk).await?;
-            self.flush_cmd().await?;
-        }
+        self.tx_cmd(CMD_MEM_WR)?;
+        self.tx_u32(addr)?;
+        self.tx_u32(data.len() as u32)?;
+        self.tx_u8(0)?;
+        self.flush_cmd()?;
 
+        self.serial.write_all(data)?;
+        self.flush_cmd()?;
         Ok(())
     }
 
-    pub async fn read_memory(&mut self, addr: u32, data: &mut [u8]) -> anyhow::Result<()> {
+    pub fn read_memory(&mut self, addr: u32, data: &mut [u8]) -> anyhow::Result<()> {
         if data.len() == 0 {
             return Ok(());
         }
 
-        self.tx_cmd(CMD_MEM_RD).await?;
-        self.tx_u32(addr).await?;
-        self.tx_u32(data.len() as u32).await?;
-        self.tx_u8(0).await?;
-        self.flush_cmd().await?;
+        self.tx_cmd(CMD_MEM_RD)?;
+        self.tx_u32(addr)?;
+        self.tx_u32(data.len() as u32)?;
+        self.tx_u8(0)?;
+        self.flush_cmd()?;
 
-        self.serial.read_exact(data).await?;
+        self.serial.read_exact(data)?;
         Ok(())
     }
 
-    pub async fn fifo_write(&mut self, data: &[u8]) -> anyhow::Result<()> {
-        debug!("FIFO WRITE ({}) {:?}", data.len(), data);
-        self.write_memory(ADDR_FIFO, data).await?;
+    pub fn fifo_write(&mut self, data: &[u8]) -> anyhow::Result<()> {
+        self.write_memory(ADDR_FIFO, data)?;
         Ok(())
     }
 
-    pub async fn fifo_write_u16(&mut self, v: u16) -> anyhow::Result<()> {
+    pub fn fifo_write_u16(&mut self, v: u16) -> anyhow::Result<()> {
         let mut buf = [0u8; 2];
         BigEndian::write_u16(&mut buf, v);
-        self.fifo_write(&buf).await?;
+        self.fifo_write(&buf)?;
         Ok(())
     }
 
-    pub async fn fifo_write_u32(&mut self, v: u32) -> anyhow::Result<()> {
+    pub fn fifo_write_u32(&mut self, v: u32) -> anyhow::Result<()> {
         let mut buf = [0u8; 4];
         BigEndian::write_u32(&mut buf, v);
-        self.fifo_write(&buf).await?;
+        self.fifo_write(&buf)?;
         Ok(())
     }
 
-    pub async fn fifo_write_str(&mut self, str: &str) -> anyhow::Result<()> {
-        self.fifo_write_u16(str.len() as u16).await?;
-        self.fifo_write(str.as_bytes()).await?;
+    pub fn fifo_write_str(&mut self, str: &str) -> anyhow::Result<()> {
+        self.fifo_write_u16(str.len() as u16)?;
+        self.fifo_write(str.as_bytes())?;
         Ok(())
     }
 
-    pub async fn fifo_read(&mut self, data: &mut [u8]) -> anyhow::Result<()> {
-        self.read_memory(ADDR_FIFO, data).await?;
+    pub fn fifo_read(&mut self, data: &mut [u8]) -> anyhow::Result<()> {
+        self.read_memory(ADDR_FIFO, data)?;
         Ok(())
     }
 
-    pub async fn load_game(&mut self, name: &str, game: &[u8], skip_fpga: bool) -> anyhow::Result<()> {
+    pub fn load_game(&mut self, name: &str, game: &[u8], skip_fpga: bool) -> anyhow::Result<()> {
         debug!("writing ROM: {} ({} bytes)", name, game.len());
-        self.set_mode(Mode::App).await?;
-        self.reset_host(ResetMode::Soft).await?;
-        self.write_memory(ADDR_ROM, game).await?;
-        self.reset_host(ResetMode::Off).await?;
+        self.set_mode(Mode::App)?;
+        self.reset_host(ResetMode::Soft)?;
+        self.write_memory(ADDR_ROM, game)?;
+        self.reset_host(ResetMode::Off)?;
 
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        let resp = self.rx_u8().await?;
+        let resp = self.rx_u8()?;
         if resp != 'r' as u8 {
             Err(anyhow!("unexpected response: {}", resp))?;
         }
 
         debug!("testing");
-        self.fifo_write("*t".as_bytes()).await?;
-        self.flush_cmd().await?;
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        self.fifo_write("*t".as_bytes())?;
+        self.flush_cmd()?;
 
-        let resp = self.rx_u8().await?;
-        debug!("AX {}", resp);
+        let resp = self.rx_u8()?;
         if resp != 'k' as u8 {
             Err(anyhow!("unexpected test response: {}", resp))?;
         }
 
         if skip_fpga {
-            self.fifo_write("*u".as_bytes()).await?;
-            self.flush_cmd().await?;
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            self.fifo_write("*u".as_bytes())?;
+            self.flush_cmd()?;
         }
 
         debug!("setting game info");
-        self.fifo_write("*g".as_bytes()).await?;
-        self.fifo_write_u32(game.len() as u32).await?;
-        self.fifo_write_str(&format!("USB:{}", name)).await?;
-        self.flush_cmd().await?;
-        self.reset_host(ResetMode::Off).await?;
+        self.fifo_write("*g".as_bytes())?;
+        self.fifo_write_u32(game.len() as u32)?;
+        self.fifo_write_str(&format!("USB:{}", name))?;
+        self.flush_cmd()?;
+
+        let resp = self.rx_u8()?;
+        debug!("RESP {}", resp);
+        self.reset_host(ResetMode::Off)?;
         Ok(())
     }
 }
