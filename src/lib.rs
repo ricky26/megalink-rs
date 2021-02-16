@@ -1,3 +1,11 @@
+//! This is an implementation of the Mega Everdrive Pro's serial interface.
+//!
+//! It can be used to control the Mega Everdrive via a USB cable.
+//!
+//! It is a re-implementation of the original C# project:
+//!   https://github.com/krikzz/MEGA-PRO
+//!
+
 use std::time::Duration;
 use byteorder::{ByteOrder, BigEndian};
 use serialport::SerialPort;
