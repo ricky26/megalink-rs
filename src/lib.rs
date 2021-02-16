@@ -425,9 +425,8 @@ impl<F: SerialFactory> EverdriveSerial<F> {
         self.fifo_write_str(&format!("USB:{}", name))?;
         self.flush_cmd()?;
 
-        let resp = self.rx_u8()?;
-        debug!("RESP {}", resp);
-        self.reset_host(ResetMode::Off)?;
+        // Clear response.
+        self.rx_u8()?;
         Ok(())
     }
 }

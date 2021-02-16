@@ -95,5 +95,6 @@ fn main() -> anyhow::Result<()> {
         },
     }
 
+    everdrive.reset_host(ResetMode::Off)?;
     Ok(())
 }
